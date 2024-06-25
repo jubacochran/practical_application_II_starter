@@ -3,5 +3,5 @@ From a business perspective, we are tasked with identifying key drivers for used
 
 This project is my journey for understanding the vehicle data and how many methods I used to
 answer the main business goals of the project.
-
+I had to delete some databases due to file limits. So I kept the final dabase and removed all others.
 From here please see the 'prompt_II.ipynb' for more business related information. 

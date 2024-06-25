@@ -1,14 +1,5 @@
 # %%
 
-
-import statsmodels.api as sm
-from statsmodels.tsa.arima.model import ARIMA
-from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-from statsmodels.tsa.stattools import acf, pacf
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-from warnings import filterwarnings
-filterwarnings('ignore')
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -53,7 +44,7 @@ vehicles = vehicles.dropna(subset=['year'])
 vehicles['year'] = vehicles['year'].astype('int64')
 
 # Drop columns with a large number of missing values
-columns_to_drop = ['type','size','VIN','paint_color','cylinders']
+columns_to_drop = ['type','size','VIN','paint_color','cylinders','model','drive']
 vehicles = vehicles.drop(columns=columns_to_drop)
 
 print(vehicles.info())
@@ -126,23 +117,38 @@ print(vehicles.shape)
 
 missing_values2 = vehicles.isnull().sum().plot(kind='bar')
 
-vehicles_numeric = vehicles.select_dtypes(include=['int64', 'float']).drop(columns='id')
-print(vehicles_numeric)
+numeric_features = vehicles.select_dtypes(include=['int64', 'float']).drop(columns='id')
+print(numeric_features)
 
-vehicles_categorical = vehicles.select_dtypes(include=['object'])
-print(vehicles_categorical)
+categorical_features = vehicles.select_dtypes(include=['object'])
+print(categorical_features)
 
 print("=================")
 print(vehicles.info())
 print(vehicles.describe())
-'''
 
-# Initialize the IterativeImputer for numerical data
-imputer = IterativeImputer(max_iter=10, random_state=0)
+# Separate numeric and categorical features
+numeric_features = vehicles.select_dtypes(include=['int64', 'float']).drop(columns='id')
+categorical_features = vehicles.select_dtypes(include=['object']).columns
 
-# Create a pipeline with IterativeImputer
-pipeline = Pipeline([
-    ('imputer', IterativeImputer(random_state=0))
+print(numeric_features)
+print(categorical_features)
+
+print("=================")
+print(vehicles.info())
+print(vehicles.describe())
+
+# Ordinal encode categorical columns
+ordinal_encoder = OrdinalEncoder()
+encoded_categorical = ordinal_encoder.fit_transform(vehicles[categorical_features])
+encoded_categorical_df = pd.DataFrame(encoded_categorical, columns=categorical_features)
+
+# Combine numeric and encoded categorical data
+combined_data = pd.concat([numeric_features.reset_index(drop=True), encoded_categorical_df.reset_index(drop=True)], axis=1)
+
+# Define the pipeline for imputation
+pipeline = Pipeline(steps=[
+    ('imputer', IterativeImputer())
 ])
 
 # Define the parameter grid
@@ -152,98 +158,30 @@ param_grid = {
     'imputer__tol': [1e-3, 1e-4, 1e-5]
 }
 
-# Perform grid search
-grid_search = GridSearchCV(pipeline, param_grid, cv=3, scoring='neg_mean_squared_error', n_jobs=-1)
+# Use GridSearchCV to find the best parameters
+grid_search = GridSearchCV(estimator=pipeline, param_grid=param_grid, cv=5, scoring='neg_mean_squared_error')
 
+# Perform imputation with parallel backend
 with parallel_backend('threading', n_jobs=-1):
-    grid_search.fit(vehicles_numeric)
-
-# Print the best parameters
-print(f"Best parameters: {grid_search.best_params_}")
-
-# Apply the best parameters to the imputer
-best_imputer = IterativeImputer(
-    max_iter=5,
-    n_nearest_features=10,
-    tol=0.001,
-    random_state=0
-)
-
-# Combine numeric and encoded categorical data for imputation
-# Ordinal encode categorical columns
-ordinal_cols = ['model', 'fuel', 'title_status', 'transmission', 'state']
-ordinal_encoder = OrdinalEncoder()
-vehicles_categorical[ordinal_cols] = ordinal_encoder.fit_transform(vehicles_categorical[ordinal_cols])
-
-# Combine numeric and encoded categorical data
-combined_data = pd.concat([vehicles_numeric, pd.DataFrame(vehicles_categorical, columns=ordinal_cols)], axis=1)
+    best_imputer = grid_search.fit(combined_data)
 
 # Impute the combined data
 with parallel_backend('threading', n_jobs=-1):
-    combined_data_imputed = best_imputer.fit_transform(combined_data)
+    combined_data_imputed = best_imputer.transform(combined_data)
 
 # Convert the imputed array back to DataFrame
-vehicles_numeric_imputed = pd.DataFrame(combined_data_imputed[:, :vehicles_numeric.shape[1]], columns=vehicles_numeric.columns)
-vehicles_categorical_imputed = pd.DataFrame(combined_data_imputed[:, vehicles_numeric.shape[1]:], columns=ordinal_cols)
+combined_data_imputed_df = pd.DataFrame(combined_data_imputed, columns=combined_data.columns)
 
 # Decode ordinal columns back to original categories
-vehicles_categorical_imputed[ordinal_cols] = ordinal_encoder.inverse_transform(vehicles_categorical_imputed[ordinal_cols])
+decoded_categorical = ordinal_encoder.inverse_transform(combined_data_imputed_df[categorical_features])
+decoded_categorical_df = pd.DataFrame(decoded_categorical, columns=categorical_features)
 
 # Combine numeric and decoded categorical data
-vehicles_imputed = pd.concat([vehicles_numeric_imputed, vehicles_categorical_imputed], axis=1)
-
-# Display the first few rows of the imputed DataFrame
-print(vehicles_imputed.head())
-
-
-output_file_path = 'final_vehicles_df-2.csv'
+vehicles_imputed = pd.concat([combined_data_imputed_df.drop(columns=categorical_features), decoded_categorical_df], axis=1)
+print(vehicles_imputed.info())
+print(vehicles_imputed.head(10))
+# Save the imputed DataFrame to a CSV file
+output_file_path = 'prime_vehicles_df-2.csv'
 vehicles_imputed.to_csv(output_file_path, index=False)
 
 print(f"DataFrame saved to {output_file_path}")
-
-'''
-
-
-'''
-# Extract ordinal columns for one-hot encoding
-ordinal_cols_data = vehicles_imputed[ordinal_cols]
-
-# Create one-hot encoded columns
-dummies = pd.get_dummies(ordinal_cols_data, drop_first=True)
-
-# Combine the numeric columns with the one-hot encoded columns
-vehicles_numeric_data = vehicles_imputed.drop(columns=ordinal_cols)
-final_vehicles_df = pd.concat([vehicles_numeric_data, dummies], axis=1)
-
-# Display the first few rows of the final DataFrame
-print(final_vehicles_df.head())
-
-# Display the info of the final DataFrame
-print(final_vehicles_df.info())
-print(final_vehicles_df.describe())
-'''
-
-
-
-
-'''
-# Optimize memory usage
-def reduce_memory_usage(df):
-    start_mem = df.memory_usage().sum() / 1024**2
-    print(f"Memory usage of dataframe is {start_mem:.2f} MB")
-
-    for col in df.columns:
-        col_type = df[col].dtype
-        
-        if col_type != object:
-            c_min = df[col].min()
-            c_max = df[col].max()
-            if str(col_type)[:3] == 'int':
-                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
-                    df[col] = df[col].astype(np.int8)
-                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
-                    df[col] = df[col].astype(np.int16)
-                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
-                    df[col] = df[col].astype(np.int32)
-
-'''

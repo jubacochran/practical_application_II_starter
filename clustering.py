@@ -1,104 +1,90 @@
 # %%
 
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.cluster import DBSCAN, KMeans
-from sklearn.metrics import silhouette_score
-import seaborn as sns
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
+import seaborn as sns
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.cluster import KMeans
+from joblib import parallel_backend
 
-# Load the data
-vehicles_normalized = pd.read_csv('normalized_cleaned_vehicles_df.csv')
+# Load the CSV file into a DataFrame
+vehicles = pd.read_csv('vehicles.csv')
 
-# Display information and first few rows of the dataset
-print(vehicles_normalized.info())
-print(vehicles_normalized.head())
+# Drop columns with a large number of missing values
+columns_to_drop = ['type','size','VIN','paint_color','cylinders','model','drive']
+vehicles = vehicles.drop(columns=columns_to_drop)
 
-# Encode categorical variables
-encoder = OneHotEncoder(drop='first', sparse=False)
-encoded_features = encoder.fit_transform(vehicles_normalized[['fuel','title_status','transmission','state']])
-encoded_df = pd.DataFrame(encoded_features, columns=encoder.get_feature_names_out(['fuel','title_status','transmission','state']))
+# Separate numeric and categorical features
+numeric_features = vehicles.select_dtypes(include=['int64', 'float']).drop(columns='id')
+categorical_features = vehicles.select_dtypes(include=['object']).columns
 
-# Concatenate the encoded columns with the original dataset
-X_df = pd.concat([vehicles_normalized, encoded_df], axis=1)
-X_df = X_df.drop(columns=['fuel','title_status','transmission','state'])
-important_features = ['odometer', 'fuel_gas', 'transmission_other', 'fuel_other', 'year', 'price_BoxCox','price']
-X_df = X_df[important_features]
+# Ordinal encode categorical columns
+ordinal_encoder = OrdinalEncoder()
+encoded_categorical = ordinal_encoder.fit_transform(vehicles[categorical_features])
+encoded_categorical_df = pd.DataFrame(encoded_categorical, columns=categorical_features)
 
-# Select features for clustering
-features = ['odometer', 'year', 'price_BoxCox']
-X = vehicles_normalized[features]
+# Combine numeric and encoded categorical data
+combined_data = pd.concat([numeric_features.reset_index(drop=True), encoded_categorical_df.reset_index(drop=True)], axis=1)
 
-# Standardize the features
+# Define the imputer with the recommended parameters
+imputer = IterativeImputer(max_iter=20, n_nearest_features=15, tol=1e-4, random_state=0)
+
+# Perform imputation
+with parallel_backend('threading', n_jobs=-1):
+    combined_data_imputed = imputer.fit_transform(combined_data)
+
+# Convert the imputed array back to DataFrame
+combined_data_imputed_df = pd.DataFrame(combined_data_imputed, columns=combined_data.columns)
+
+# Decode ordinal columns back to original categories
+decoded_categorical = ordinal_encoder.inverse_transform(combined_data_imputed_df[categorical_features])
+decoded_categorical_df = pd.DataFrame(decoded_categorical, columns=categorical_features)
+
+# Combine numeric and decoded categorical data
+vehicles_imputed = pd.concat([combined_data_imputed_df.drop(columns=categorical_features), decoded_categorical_df], axis=1)
+
+# Recalculate tighter IQR bounds with a stricter multiplier (e.g., 1.0) on vehicles_imputed
+Q1_price = vehicles_imputed['price'].quantile(0.25)
+Q3_price = vehicles_imputed['price'].quantile(0.75)
+IQR_price = Q3_price - Q1_price
+lower_bound_price = Q1_price - 1.0 * IQR_price
+upper_bound_price = Q3_price + 1.0 * IQR_price
+
+Q1_odometer = vehicles_imputed['odometer'].quantile(0.25)
+Q3_odometer = vehicles_imputed['odometer'].quantile(0.75)
+IQR_odometer = Q3_odometer - Q1_odometer
+lower_bound_odometer = Q1_odometer - 1.0 * IQR_odometer
+upper_bound_odometer = Q3_odometer + 1.0 * IQR_odometer
+
+# Filter out the outliers with tighter criteria on vehicles_imputed
+filtered_vehicles = vehicles_imputed[
+    (vehicles_imputed['price'] >= lower_bound_price) &
+    (vehicles_imputed['price'] <= upper_bound_price) &
+    (vehicles_imputed['odometer'] >= lower_bound_odometer) &
+    (vehicles_imputed['odometer'] <= upper_bound_odometer)
+]
+
+# Include 'year' as a numerical feature
+filtered_vehicles = filtered_vehicles.dropna(subset=['year'])
+filtered_vehicles['year'] = filtered_vehicles['year'].astype(int)
+
+# Standardize the 'price', 'odometer', and 'year' features for clustering
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-''''
-# Determine the optimal number of clusters using silhouette score
-silhouette_scores = []
-K = range(2, 10)
+scaled_features_filtered = scaler.fit_transform(filtered_vehicles[['price', 'odometer', 'year']])
 
-for k in K:
-    kmeans = KMeans(n_clusters=k, random_state=42)
-    kmeans.fit(X_scaled)
-    labels = kmeans.labels_
-    silhouette_scores.append(silhouette_score(X_scaled, labels))
+# Re-apply KMeans Clustering
+kmeans_filtered = KMeans(n_clusters=5, random_state=42)
+kmeans_labels_filtered = kmeans_filtered.fit_predict(scaled_features_filtered)
 
-# Plot silhouette scores
-plt.figure(figsize=(10, 6))
-plt.plot(K, silhouette_scores, 'bo-')
-plt.xlabel('Number of clusters (k)')
-plt.ylabel('Silhouette Score')
-plt.title('Silhouette Analysis for Optimal k')
-plt.show()
+# Add the cluster labels to the DataFrame
+filtered_vehicles['kmeans_cluster'] = kmeans_labels_filtered
 
-# Fit K-Means with optimal number of clusters
-optimal_k = K[silhouette_scores.index(max(silhouette_scores))]
-kmeans = KMeans(n_clusters=optimal_k, random_state=42)
-kmeans.fit(X_scaled)
-labels_kmeans = kmeans.labels_
+# Save the final dataframe with all data and cluster labels
+filtered_vehicles.to_csv('optimus-prime-df.csv', index=False)
 
-# Add cluster labels to the dataframe
-vehicles_normalized['cluster_kmeans'] = labels_kmeans
-'''
-# Apply DBSCAN
-dbscan = DBSCAN(eps=0.5, min_samples=10)
-labels_dbscan = dbscan.fit_predict(X_scaled)
-
-# Add cluster labels to the dataframe
-vehicles_normalized['cluster_dbscan'] = labels_dbscan
-
-# 2D Scatter plot for K-Means clusters
-plt.figure(figsize=(20, 10))
-sns.scatterplot(x='odometer', y='price_BoxCox', hue='cluster_kmeans', data=vehicles_normalized, palette='viridis')
-plt.title('K-Means Clustering')
-plt.show()
-
-# 2D Scatter plot for DBSCAN clusters
-plt.figure(figsize=(20, 10))
-sns.scatterplot(x='odometer', y='price_BoxCox', hue='cluster_dbscan', data=vehicles_normalized, palette='viridis')
-plt.title('DBSCAN Clustering')
-plt.show()
-
-# 3D Scatter plot for K-Means clusters
-fig = plt.figure(figsize=(12, 8))
-ax = fig.add_subplot(111, projection='3d')
-scatter = ax.scatter(X_scaled[:, 0], X_scaled[:, 1], X_scaled[:, 2], c=labels_kmeans, cmap='viridis')
-ax.set_xlabel('Odometer')
-ax.set_ylabel('Year')
-ax.set_zlabel('Price_BoxCox')
-plt.title('3D K-Means Clustering')
-plt.legend(*scatter.legend_elements(), title="Clusters")
-plt.show()
-'''
-# 3D Scatter plot for DBSCAN clusters
-fig = plt.figure(figsize=(12, 8))
-ax = fig.add_subplot(111, projection='3d')
-scatter = ax.scatter(X_scaled[:, 0], X_scaled[:, 1], X_scaled[:, 2], c=labels_dbscan, cmap='viridis')
-ax.set_xlabel('Odometer')
-ax.set_ylabel('Year')
-ax.set_zlabel('Price_BoxCox')
-plt.title('3D DBSCAN Clustering')
-plt.legend(*scatter.legend_elements(), title="Clusters")
-plt.show()
-'''
+print(f"Final dataframe with cluster labels saved to 'optimus-prime-df.csv'")
