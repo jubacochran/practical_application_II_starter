@@ -12,52 +12,58 @@ filterwarnings('ignore')
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import mean_squared_error,silhouette_score
+from sklearn.metrics import mean_squared_error, silhouette_score
 from scipy.stats import uniform, norm, boxcox
 import seaborn as sns
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, PolynomialFeatures,StandardScaler
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, PolynomialFeatures, StandardScaler
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from joblib import parallel_backend
 import plotly.express as px
-from sklearn.linear_model import LinearRegression, Ridge,Lasso
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.inspection import permutation_importance
 from sklearn.feature_selection import SequentialFeatureSelector
-from sklearn.cluster import KMeans,d
+from sklearn.cluster import KMeans, DBSCAN
 
 
 # Load the CSV file into a DataFrame
-vehicles = pd.read_csv('normalized_cleaned_vehicles_df.csv')
+vehicles = pd.read_csv('prime_vehicles_df-2.csv')
 print(vehicles.info())
 print(vehicles.head(10))
 
-
 encoder = OneHotEncoder(drop='first', sparse=False)
-encoded_features = encoder.fit_transform(vehicles[['fuel','title_status','transmission','state']])
-encoded_df = pd.DataFrame(encoded_features, columns=encoder.get_feature_names_out(['fuel','title_status','transmission','state']))
+encoded_features = encoder.fit_transform(vehicles[['region', 'manufacturer', 'condition', 'fuel', 'title_status', 'transmission', 'state']])
+encoded_df = pd.DataFrame(encoded_features, columns=encoder.get_feature_names_out(['region', 'manufacturer', 'condition', 'fuel', 'title_status', 'transmission', 'state']))
 # Concatenate the encoded columns with the original dataset
 X_df = pd.concat([vehicles, encoded_df], axis=1)
-X_df = X_df.drop(columns=['fuel','title_status','transmission','state'])
-important_features = ['odometer', 'fuel_gas', 'transmission_other', 'fuel_other', 'year', 'price_BoxCox','price']
-X_df = X_df[important_features]
+X_df = X_df.drop(columns=['region', 'manufacturer', 'condition', 'fuel', 'title_status', 'transmission', 'state'])
+#important_features = ['odometer', 'fuel_gas', 'transmission_other', 'fuel_other', 'year', 'price_BoxCox', 'price']
+#X_df = X_df[important_features]
 
 print(X_df.info())
 print(X_df.head(10))
 
+# Select important features based on permutation importance
+important_features = ['odometer', 'year', 'manufacturer_kia', 'manufacturer_volkswagen', 'manufacturer_hyundai']
 
 # Prepare data for modeling
-X = X_df.drop(columns=['price', 'price_BoxCox'])
-y = X_df['price_BoxCox']
+X = X_df[important_features]
+y = X_df['price']
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=23)
+
+print(X_train.shape)
+print(X_test.shape)
+print(type(X_train), type(y_train))
+print(y_train.shape, y_test.shape)
 
 # Define pipelines
 pipeline_poly = Pipeline([
     ('poly_features', PolynomialFeatures(include_bias=False)),
     ('scaler', StandardScaler()),
-    ('selector', SequentialFeatureSelector(LinearRegression(), n_features_to_select=6)),
+    ('selector', SequentialFeatureSelector(LinearRegression(), n_features_to_select='auto')),
     ('model', LinearRegression())
 ])
 
@@ -70,26 +76,16 @@ pipeline_lasso = Pipeline([
     ('poly_features', PolynomialFeatures(include_bias=False)),
     ('scaler', StandardScaler()),
     ('selector', SequentialFeatureSelector(Lasso(), n_features_to_select='auto')),
-    ('model', Lasso())
+    ('model', Lasso(max_iter=10000))
 ])
 
 # Define parameter grid
 param_grid = [
     {
-        'poly_features__degree': [1, 2, 3, 4],
+        'poly_features__degree': [3,4,5],
         'model': [LinearRegression()],
         'model__fit_intercept': [True, False]
     },
-    {
-        'poly_features__degree': [1, 2, 3, 4],
-        'model': [Ridge()],
-        'model__alpha': np.logspace(-2, 2, 20)
-    },
-    {
-        'poly_features__degree': [1, 2, 3, 4],
-        'model': [Lasso()],
-        'model__alpha': np.logspace(-2, 2, 20)
-    }
 ]
 
 # Use GridSearchCV to find the best model and parameters
@@ -106,12 +102,16 @@ print("Best Model Parameters:", best_params)
 # Evaluate on the test set
 y_pred = best_model.predict(X_test)
 test_mse = mean_squared_error(y_test, y_pred)
+test_rmse = np.sqrt(test_mse)
 print("Test MSE:", test_mse)
+print("Test RMSE:", test_rmse)
 
 # Predict on the training set
 y_train_pred = best_model.predict(X_train)
 train_mse = mean_squared_error(y_train, y_train_pred)
+train_rmse = np.sqrt(train_mse)
 print("Train MSE:", train_mse)
+print("Train RMSE:", train_rmse)
 
 # Plotting the results for training data
 plt.figure(figsize=(10, 6))
@@ -133,8 +133,23 @@ plt.title('Actual vs Predicted values (Test Data)')
 plt.legend()
 plt.show()
 
+# If you want to convert the GridSearchCV scores to RMSE
+results = grid_search.cv_results_
+params = results['params']
+mean_test_scores = results['mean_test_score']
+mean_test_rmse = np.sqrt(-mean_test_scores)
+
+# Print the parameters and their corresponding RMSE scores
+for param, score, rmse in zip(params, mean_test_scores, mean_test_rmse):
+    print(f"Parameters: {param}, Score (neg_MSE): {score}, RMSE: {rmse}")
 
 '''
+# Prepare data for modeling
+X = X_df.drop(columns=['price'])
+y = X_df['price']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
 print(X_train.shape)
 print(X_test.shape)
 print(type(X_train), type(y_train))
@@ -148,8 +163,7 @@ mse_baseline_test = mean_squared_error(baseline_test, y_test)
 print(baseline_train.shape, baseline_test.shape)
 print(f'Baseline for training data: {mse_baseline_train}')
 print(f'Baseline for testing data: {mse_baseline_test}')
-'''
-'''
+
 #multicolinearity
  
 def vif(exogs, dataframe):
@@ -170,10 +184,12 @@ def vif(exogs, dataframe):
 #Return table of colinear featrues
 
 vif_data = (vif(X.columns, X).sort_values(by = 'VIF', ascending = False))
+vif_data = pd.DataFrame(vif_data)
+vif_data.to_csv('vif_df-1.csv', index=False)
 
 #Finding what feature has the highest positive correlation with target
 
-highest_corr = X_df.corr()[['price_BoxCox']].nlargest(columns= 'price_BoxCox', n=2).index[1]
+highest_corr = X_df.corr()[['price']].nlargest(columns= 'price', n=2).index[1]
 print(highest_corr)
 
 
@@ -218,8 +234,25 @@ important_features = importance_df.head(5)['feature'].tolist()
 X_df_important = X_df[important_features ]
 print(X_df_important.info())
 print(X_df_important.head(10))
+
+importance_df.to_csv('normalized_cleaned_vehicles_df.csv', index=False)
+
+# Scatter plot for 'odometer' vs 'price'
+plt.figure(figsize=(10, 6))
+sns.scatterplot(x='odometer', y='price', data=vehicles)
+plt.title('Odometer vs Price')
+plt.xlabel('Odometer')
+plt.ylabel('Price')
+plt.show()
+
+# Scatter plot for 'year' vs 'price'
+plt.figure(figsize=(10, 6))
+sns.scatterplot(x='year', y='price', data=vehicles)
+plt.title('Year vs Price')
+plt.xlabel('Year')
+plt.ylabel('Price')
+plt.show()
+
+plt.figure(figsize=(10,6))
+px.scatter(vehicles,x='odometer',y='price',marginal_x="histogram",marginal_y="histogram")
 '''
-
-
-
-
