@@ -137,7 +137,7 @@ model_results = {}
 for model_name, model in best_models.items():
     y_pred = model.predict(X_test_important)
     mse = mean_squared_error(y_test, y_pred)
-    mae = mean_absolute_error(y_test)
+    mae = mean_absolute_error(y_test,y_pred)
     r_squared = r2_score(y_test, y_pred)
     model_results[model_name] = (mse, mae, r_squared)
 
@@ -176,3 +176,4 @@ plt.xticks(range(X_high_price.shape[1]), features[indices], rotation=90)
 plt.xlabel('Features')
 plt.ylabel('Importance')
 plt.show()
+# %%
